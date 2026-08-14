@@ -1,17 +1,12 @@
 import { NextResponse } from "next/server";
 
-type ContributionDay = {
-	date: string;
-	contributionCount: number;
-};
-
-type ContributionWeek = {
-	contributionDays?: ContributionDay[];
-};
-
-function toUtcDateString(date: Date): string {
-	return date.toISOString().slice(0, 10);
-}
+import {
+	getCachedContributionData,
+	toUtcDateString,
+	type CachedContributionUser,
+	type ContributionDay,
+	type ContributionWeek,
+} from "@/lib/contribution-cache";
 
 function toLocalDateString(date: Date): string {
 	const year = date.getFullYear();
@@ -26,26 +21,13 @@ function subtractUtcDays(dateString: string, days: number): string {
 	return toUtcDateString(date);
 }
 
-export async function POST(req: Request) {
-	try {
-		const { login } = await req.json();
+async function fetchGithubContributionData(login: string, now: Date) {
+	const token = process.env.GITHUB_TOKEN;
+	if (!token) {
+		throw new Error("Missing GITHUB_TOKEN env var");
+	}
 
-		if (!login) {
-			return NextResponse.json(
-				{ error: "Missing login" },
-				{ status: 400 },
-			);
-		}
-
-		const token = process.env.GITHUB_TOKEN;
-		if (!token) {
-			return NextResponse.json(
-				{ error: "Missing GITHUB_TOKEN env var" },
-				{ status: 500 },
-			);
-		}
-
-		const query = `
+	const query = `
       query($login: String!, $from: DateTime!, $to: DateTime!) {
         user(login: $login) {
           contributionsCollection(from: $from, to: $to) {
@@ -62,43 +44,64 @@ export async function POST(req: Request) {
         }
       }
     `;
-		const date = new Date();
-		const from = new Date(date);
-		from.setFullYear(date.getFullYear() - 1);
+	const from = new Date(now);
+	from.setUTCFullYear(now.getUTCFullYear() - 1);
 
-		const res = await fetch("https://api.github.com/graphql", {
-			method: "POST",
-			headers: {
-				Authorization: `bearer ${token}`,
-				"Content-Type": "application/json",
+	const res = await fetch("https://api.github.com/graphql", {
+		method: "POST",
+		headers: {
+			Authorization: `bearer ${token}`,
+			"Content-Type": "application/json",
+		},
+		body: JSON.stringify({
+			query,
+			variables: {
+				login,
+				from: from.toISOString(),
+				to: now.toISOString(),
 			},
-			body: JSON.stringify({
-				query,
-				variables: {
-					login,
-					from: from.toISOString(),
-					to: date.toISOString(),
-				},
-			}),
-		});
+		}),
+	});
 
-		const data = await res.json();
+	const data = await res.json();
 
-		if (!res.ok) {
+	if (!res.ok) {
+		const error = new Error("GitHub API error") as Error & {
+			status?: number;
+			details?: unknown;
+		};
+		error.status = res.status;
+		error.details = data;
+		throw error;
+	}
+
+	const user = data?.data?.user as CachedContributionUser | undefined;
+	if (!user) {
+		throw new Error("User not found");
+	}
+
+	return user;
+}
+
+export async function POST(req: Request) {
+	try {
+		const { login } = await req.json();
+
+		if (!login) {
 			return NextResponse.json(
-				{ error: "GitHub API error", details: data },
-				{ status: res.status },
+				{ error: "Missing login" },
+				{ status: 400 },
 			);
 		}
 
-		const user = data?.data?.user;
-		if (!user) {
-			console.log("User not found, response:", data);
-			return NextResponse.json(
-				{ error: "User not found" },
-				{ status: 404 },
-			);
-		}
+		const now = new Date();
+		const user = await getCachedContributionData(
+			login,
+			async (currentLogin, currentNow) => {
+				return fetchGithubContributionData(currentLogin, currentNow);
+			},
+			now,
+		);
 
 		const weeks: ContributionWeek[] =
 			user.contributionsCollection?.contributionCalendar?.weeks ?? [];
@@ -112,7 +115,6 @@ export async function POST(req: Request) {
 				.map((d: ContributionDay) => d.date),
 		);
 
-		const now = new Date();
 		const utcToday = toUtcDateString(now);
 		const localToday = toLocalDateString(now);
 
@@ -136,8 +138,29 @@ export async function POST(req: Request) {
 
 		return NextResponse.json(streak);
 	} catch (error: unknown) {
-		const details = error instanceof Error ? error.message : String(error);
+		if (
+			error instanceof Error &&
+			"status" in error &&
+			typeof error.status === "number"
+		) {
+			const githubError = error as Error & {
+				status: number;
+				details?: unknown;
+			};
+			return NextResponse.json(
+				{ error: "GitHub API error", details: githubError.details },
+				{ status: githubError.status },
+			);
+		}
 
+		if (error instanceof Error && error.message === "User not found") {
+			return NextResponse.json(
+				{ error: "User not found" },
+				{ status: 404 },
+			);
+		}
+
+		const details = error instanceof Error ? error.message : String(error);
 		return NextResponse.json(
 			{ error: "Server error", details },
 			{ status: 500 },
