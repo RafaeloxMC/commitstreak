@@ -4,7 +4,9 @@ export async function GET(
 	req: NextRequest,
 	{ params }: { params: Promise<{ username: string }> },
 ) {
-	const { username } = await params;
+	let { username } = await params;
+
+	username = username.replace(/\.(?:svg|jpe?g|png|gif)$/i, "");
 
 	const res = await fetch(new URL("/api/contributions", req.nextUrl.origin), {
 		method: "POST",
@@ -16,12 +18,18 @@ export async function GET(
 	const result: unknown = await res.json();
 	const streak = typeof result === "number" ? result : 0;
 
+	let title = "On Fire!";
+
+	if (streak == 0) {
+		title = "On Break!";
+	}
+
 	const safe = username.replace(/[^a-zA-Z0-9_-]/g, "");
 	const svg = `<svg width="800" height="400" viewBox="0 0 800 400" fill="none" xmlns="http://www.w3.org/2000/svg"
     xmlns:xlink="http://www.w3.org/1999/xlink">
     <rect width="800" height="400" rx="15" fill="#343434" />
     <text fill="white" style="white-space: pre" xml:space="preserve" font-family="sans"
-        font-size="76" font-weight="900" letter-spacing="0em"><tspan x="295" y="105.636">On Fire!</tspan></text>
+        font-size="76" font-weight="900" letter-spacing="0em"><tspan x="295" y="105.636">${title}</tspan></text>
     <text fill="white" fill-opacity="0.75" style="white-space: pre" xml:space="preserve" font-family="sans"
 		font-size="32" font-style="italic" letter-spacing="0em"><tspan x="295" y="155.136">@${safe} has coded for </tspan><tspan x="295" y="194.136">${streak} days in a row!</tspan></text>
     <text fill="white" fill-opacity="0.5" style="white-space: pre" xml:space="preserve"
