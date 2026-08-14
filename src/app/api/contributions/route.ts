@@ -9,9 +9,26 @@ type ContributionWeek = {
 	contributionDays?: ContributionDay[];
 };
 
+function toUtcDateString(date: Date): string {
+	return date.toISOString().slice(0, 10);
+}
+
+function toLocalDateString(date: Date): string {
+	const year = date.getFullYear();
+	const month = String(date.getMonth() + 1).padStart(2, "0");
+	const day = String(date.getDate()).padStart(2, "0");
+	return `${year}-${month}-${day}`;
+}
+
+function subtractUtcDays(dateString: string, days: number): string {
+	const date = new Date(`${dateString}T00:00:00.000Z`);
+	date.setUTCDate(date.getUTCDate() - days);
+	return toUtcDateString(date);
+}
+
 export async function POST(req: Request) {
 	try {
-		const { login, from, to } = await req.json();
+		const { login } = await req.json();
 
 		if (!login) {
 			return NextResponse.json(
@@ -45,6 +62,9 @@ export async function POST(req: Request) {
         }
       }
     `;
+		const date = new Date();
+		const from = new Date(date);
+		from.setFullYear(date.getFullYear() - 1);
 
 		const res = await fetch("https://api.github.com/graphql", {
 			method: "POST",
@@ -54,7 +74,11 @@ export async function POST(req: Request) {
 			},
 			body: JSON.stringify({
 				query,
-				variables: { login, from, to },
+				variables: {
+					login,
+					from: from.toISOString(),
+					to: date.toISOString(),
+				},
 			}),
 		});
 
@@ -69,28 +93,48 @@ export async function POST(req: Request) {
 
 		const user = data?.data?.user;
 		if (!user) {
+			console.log("User not found, response:", data);
 			return NextResponse.json(
 				{ error: "User not found" },
 				{ status: 404 },
 			);
 		}
 
-		const weeks =
+		const weeks: ContributionWeek[] =
 			user.contributionsCollection?.contributionCalendar?.weeks ?? [];
-		const days = weeks.flatMap(
+		const days: ContributionDay[] = weeks.flatMap(
 			(w: ContributionWeek) => w.contributionDays ?? [],
 		);
 
-		return NextResponse.json({
-			login,
-			totalContributions:
-				user.contributionsCollection?.contributionCalendar
-					?.totalContributions ?? 0,
-			days: days.map((d: ContributionDay) => ({
-				date: d.date, // YYYY-MM-DD
-				count: d.contributionCount,
-			})),
-		});
+		const contributedDates = new Set(
+			days
+				.filter((d: ContributionDay) => d.contributionCount > 0)
+				.map((d: ContributionDay) => d.date),
+		);
+
+		const now = new Date();
+		const utcToday = toUtcDateString(now);
+		const localToday = toLocalDateString(now);
+
+		const calendarDays = [
+			...new Set<string>(days.map((d: ContributionDay) => d.date)),
+		].sort();
+
+		const latestNonFutureDay =
+			calendarDays.filter((d) => d <= utcToday).at(-1) ?? utcToday;
+
+		const today: string = calendarDays.includes(localToday)
+			? localToday
+			: calendarDays.includes(utcToday)
+				? utcToday
+				: latestNonFutureDay;
+
+		let streak = 0;
+		while (contributedDates.has(subtractUtcDays(today, streak))) {
+			streak += 1;
+		}
+
+		return NextResponse.json(streak);
 	} catch (error: unknown) {
 		const details = error instanceof Error ? error.message : String(error);
 
