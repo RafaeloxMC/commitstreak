@@ -131,12 +131,19 @@ export async function POST(req: Request) {
 				? utcToday
 				: latestNonFutureDay;
 
+		const yesterday = subtractUtcDays(today, 1);
+		const workedToday = contributedDates.has(today);
+		const streakAnchor = workedToday ? today : yesterday;
+
 		let streak = 0;
-		while (contributedDates.has(subtractUtcDays(today, streak))) {
+		while (contributedDates.has(subtractUtcDays(streakAnchor, streak))) {
 			streak += 1;
 		}
 
-		return NextResponse.json(streak);
+		return NextResponse.json({
+			streak,
+			today: workedToday,
+		});
 	} catch (error: unknown) {
 		if (
 			error instanceof Error &&

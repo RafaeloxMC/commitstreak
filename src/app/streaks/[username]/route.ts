@@ -18,7 +18,15 @@ export async function GET(
 	});
 
 	const result: unknown = await res.json();
-	const streak = typeof result === "number" ? result : 0;
+	const streak =
+		typeof result === "object" &&
+		result !== null &&
+		"streak" in result &&
+		typeof result.streak === "number"
+			? result.streak
+			: typeof result === "number"
+				? result
+				: 0;
 
 	let title = "On Fire!";
 	let description = `@${safe} coded for </tspan><tspan x="295" y="194.136">${streak} days in a row!</tspan>`;
